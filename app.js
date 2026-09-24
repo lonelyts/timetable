@@ -743,15 +743,16 @@
       const isNow =
         ui.weekOffset === 0 && c.day === todayWd && nowMinutes() >= toMin(r.start) && nowMinutes() < toMin(r.end);
       const fullTerm = c.weeks.length === 1 && c.weeks[0][0] === 1 && c.weeks[0][1] >= data.meta.totalWeeks;
+      const showWeeks = !(fullTerm && c.parity === "all");
       blocks +=
         '<button type="button" class="blk' + (isNow ? " is-now" : "") + (c.kind === "lab" ? " is-lab" : "") +
-        '" data-tone="' + c.tone + '" data-span="' + c.span + '"' +
+        '" data-tone="' + c.tone + '" data-span="' + c.span + '"' + (showWeeks ? ' data-weeks="1"' : "") +
         ' style="--row:' + (c.slot + 1) + ";--span:" + c.span + ";--col:" + (di + 2) + ";--i:" + order + '"' +
         ' data-action="open" data-id="' + c.id + '" aria-label="' + esc(c.name) + " " + weeksLabel(c) + '">' +
         '<span class="blk-name">' + kindMark(c) + esc(c.short || c.name) + "</span>" +
         (c.room ? '<span class="blk-room">' + esc(c.room) + "</span>" : "") +
         (c.teacher ? '<span class="blk-teacher">' + esc(c.teacher) + "</span>" : "") +
-        (fullTerm && c.parity === "all" ? "" : '<span class="blk-week">' + weeksLabel(c) + "</span>") +
+        (showWeeks ? '<span class="blk-week">' + weeksLabel(c) + "</span>" : "") +
         "</button>";
     });
     const count = laid.length;

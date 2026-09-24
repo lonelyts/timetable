@@ -455,7 +455,7 @@ h1, h2, h3, p { margin: 0; }
   grid-row: var(--row) / span var(--span, 1);
   grid-column: var(--col);
   margin: 2px;
-  padding: 4px 5px;
+  padding: 3px 4px;
   border: 0;
   border-radius: 11px;
   text-align: left;
@@ -476,7 +476,7 @@ h1, h2, h3, p { margin: 0; }
   overflow: hidden;
   font-size: 10.5px;
   font-weight: 600;
-  line-height: 1.25;
+  line-height: 1.15;
 }
 /* 教室、老师各占一行，列窄的时候也能看全 */
 .blk .blk-room,
@@ -484,7 +484,7 @@ h1, h2, h3, p { margin: 0; }
   display: -webkit-box;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-top: 2px;
+  margin-top: 0.5px;
   font-size: 9px;
   line-height: 1.2;
 }
@@ -494,11 +494,13 @@ h1, h2, h3, p { margin: 0; }
 .blk[data-span="1"] .blk-name { -webkit-line-clamp: 1; }
 .blk[data-span="1"] .blk-room { -webkit-line-clamp: 1; }
 .blk[data-span="1"] .blk-teacher { display: none; }
+/* 还要显示周次角标的，教室收成一行，保证最后一行不被切掉 */
+.blk[data-weeks="1"] .blk-room { -webkit-line-clamp: 1; }
 .blk .blk-week {
   display: block;
-  margin-top: 2px;
+  margin-top: 1px;
   font-size: 8.5px;
-  line-height: 1.2;
+  line-height: 1.15;
   color: color-mix(in oklab, var(--fg) 58%, transparent);
 }
 .blk.is-now { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 55%, transparent); }
