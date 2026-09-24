@@ -391,9 +391,10 @@ h1, h2, h3, p { margin: 0; }
 .week-nav button:disabled { opacity: 0.4; }
 
 .week-grid {
+  --head-h: 46px;
   display: grid;
   grid-template-columns: 44px repeat(var(--days, 5), minmax(0, 1fr));
-  grid-template-rows: 34px repeat(var(--slots, 5), minmax(0, 1fr));
+  grid-template-rows: var(--head-h) repeat(var(--slots, 5), minmax(0, 1fr));
   position: relative;
   flex: 1;
   min-height: 0;
@@ -401,20 +402,25 @@ h1, h2, h3, p { margin: 0; }
 }
 .wk-day {
   display: grid;
+  /* 字母/圆圈占同一个固定高的槽，日期才会对齐 */
+  grid-template-rows: 22px auto;
+  align-content: start;
   justify-items: center;
-  gap: 2px;
-  padding: 6px 0 7px;
+  gap: 1px;
+  padding: 6px 0 4px;
   font-size: 11.5px;
   color: var(--muted);
 }
-.wk-day b { font-weight: 500; }
+.wk-day b {
+  display: grid;
+  place-items: center;
+  height: 22px;
+  font-weight: 500;
+}
 .wk-day span { font-size: 9.5px; }
 .wk-day.is-today { color: var(--fg); }
 .wk-day.is-today b {
-  display: grid;
-  place-items: center;
   width: 22px;
-  height: 22px;
   border-radius: 50%;
   background: var(--accent);
   color: #fff;
@@ -466,22 +472,28 @@ h1, h2, h3, p { margin: 0; }
 .blk .blk-name {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   overflow: hidden;
   font-size: 10.5px;
   font-weight: 600;
   line-height: 1.25;
 }
-.blk .blk-sub {
+/* 教室、老师各占一行，列窄的时候也能看全 */
+.blk .blk-room,
+.blk .blk-teacher {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
   overflow: hidden;
   margin-top: 2px;
   font-size: 9px;
   line-height: 1.2;
-  color: color-mix(in oklab, var(--fg) 72%, transparent);
 }
+.blk .blk-room { -webkit-line-clamp: 2; color: color-mix(in oklab, var(--fg) 74%, transparent); }
+.blk .blk-teacher { -webkit-line-clamp: 1; color: color-mix(in oklab, var(--fg) 56%, transparent); }
+/* 只占一个大节的课，格子里放不下三行，收一收 */
+.blk[data-span="1"] .blk-name { -webkit-line-clamp: 1; }
+.blk[data-span="1"] .blk-room { -webkit-line-clamp: 1; }
+.blk[data-span="1"] .blk-teacher { display: none; }
 .blk .blk-week {
   display: block;
   margin-top: 2px;

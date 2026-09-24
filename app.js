@@ -742,15 +742,15 @@
       const r = courseRange(c);
       const isNow =
         ui.weekOffset === 0 && c.day === todayWd && nowMinutes() >= toMin(r.start) && nowMinutes() < toMin(r.end);
-      const sub = [c.room, c.teacher].filter(Boolean).join(" · ");
       const fullTerm = c.weeks.length === 1 && c.weeks[0][0] === 1 && c.weeks[0][1] >= data.meta.totalWeeks;
       blocks +=
         '<button type="button" class="blk' + (isNow ? " is-now" : "") + (c.kind === "lab" ? " is-lab" : "") +
-        '" data-tone="' + c.tone + '"' +
+        '" data-tone="' + c.tone + '" data-span="' + c.span + '"' +
         ' style="--row:' + (c.slot + 1) + ";--span:" + c.span + ";--col:" + (di + 2) + ";--i:" + order + '"' +
         ' data-action="open" data-id="' + c.id + '" aria-label="' + esc(c.name) + " " + weeksLabel(c) + '">' +
         '<span class="blk-name">' + kindMark(c) + esc(c.short || c.name) + "</span>" +
-        '<span class="blk-sub">' + esc(sub) + "</span>" +
+        (c.room ? '<span class="blk-room">' + esc(c.room) + "</span>" : "") +
+        (c.teacher ? '<span class="blk-teacher">' + esc(c.teacher) + "</span>" : "") +
         (fullTerm && c.parity === "all" ? "" : '<span class="blk-week">' + weeksLabel(c) + "</span>") +
         "</button>";
     });
@@ -760,7 +760,8 @@
     const lastEnd = toMin(SLOTS[SLOTS.length - 1].end);
     const showNow = ui.weekOffset === 0 && nowMinutes() > firstStart - 90 && nowMinutes() < lastEnd + 90;
     const nowLine = showNow
-      ? '<div class="nowline" style="top:calc(34px + (100% - 34px) * ' + nowRatio().toFixed(4) +
+      ? '<div class="nowline" style="top:calc(var(--head-h, 46px) + (100% - var(--head-h, 46px)) * ' +
+        nowRatio().toFixed(4) +
         ');transform:translateY(-50%)"><i></i><u></u><span>' + hhmm(nowMinutes()) + "</span></div>"
       : "";
 
