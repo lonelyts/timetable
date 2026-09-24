@@ -181,6 +181,17 @@
         theme: "auto",
         accent: PRESETS[0].a,
         accent2: PRESETS[0].b,
+        // 立绘壁纸设置（图片本身存在本地 IndexedDB，只有 key 记在这里）
+        wall: {
+          key: "",
+          opacity: 0.85,
+          blur: 0,
+          align: "top",
+          size: "contain",
+          cutout: true,
+          onToday: true,
+          onWeek: true,
+        },
       },
       courses: MY_COURSES.map((c, i) => Object.assign({ id: "c" + (i + 1), span: 1, parity: "all" }, c)),
     };
@@ -203,6 +214,7 @@
     const base = defaultData();
     const src = raw && typeof raw === "object" ? raw : {};
     const meta = Object.assign({}, base.meta, src.meta || {});
+    meta.wall = Object.assign({}, base.meta.wall, (src.meta && src.meta.wall) || {});
     const courses = (Array.isArray(src.courses) ? src.courses : base.courses).map((c, i) => ({
       id: c.id || "c" + i + uid(),
       name: String(c.name || "未命名课程"),
@@ -234,6 +246,218 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     } catch (err) {
       toast("浏览器禁止本地存储，本次改动不会被保存");
+    }
+  }
+
+  /* ============ 3.5 立绘壁纸：图片只存本地（IndexedDB），不上传、不进仓库 ============ */
+
+  const MEDIA_DB = "my-timetable-media";
+  const media = {}; // key -> dataURL，内存缓存，渲染时同步取用
+
+  function openMediaDB() {
+    return new Promise((resolve, reject) => {
+      if (typeof indexedDB === "undefined") {
+        reject(new Error("no indexeddb"));
+        return;
+      }
+      const req = indexedDB.open(MEDIA_DB, 1);
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains("media")) req.result.createObjectStore("media");
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function mediaPut(key, dataUrl) {
+    media[key] = dataUrl; // 先放内存，界面立刻能用
+    try {
+      const db = await openMediaDB();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("media", "readwrite");
+        tx.objectStore("media").put(dataUrl, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (err) {
+      // 兜底：浏览器不支持 IndexedDB 时，试着塞进 localStorage（可能因太大失败）
+      try {
+        localStorage.setItem("media:" + key, dataUrl);
+      } catch (err2) {
+        toast("这台浏览器不让存大图，壁纸只在本次打开时有效");
+      }
+    }
+  }
+
+  async function mediaDel(key) {
+    delete media[key];
+    try {
+      const db = await openMediaDB();
+      await new Promise((resolve) => {
+        const tx = db.transaction("media", "readwrite");
+        tx.objectStore("media").delete(key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => resolve();
+      });
+    } catch (err) {
+      /* ignore */
+    }
+    try {
+      localStorage.removeItem("media:" + key);
+    } catch (err) {
+      /* ignore */
+    }
+  }
+
+  async function mediaLoadAll() {
+    try {
+      const db = await openMediaDB();
+      await new Promise((resolve) => {
+        const tx = db.transaction("media", "readonly");
+        const store = tx.objectStore("media");
+        const req = store.openCursor();
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            media[cursor.key] = cursor.value;
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        req.onerror = () => resolve();
+      });
+    } catch (err) {
+      /* 没有 IndexedDB 就看 localStorage 兜底 */
+    }
+    Object.keys(localStorage).forEach((k) => {
+      if (k.indexOf("media:") === 0) {
+        const key = k.slice(6);
+        if (!media[key]) media[key] = localStorage.getItem(k) || "";
+      }
+    });
+  }
+
+  /* 去背景：从四条边往里泛洪，只删掉「和边缘连通、颜色接近背景」的区域。
+     这样不管背景是白色还是浅黄/浅灰都能去掉，而人物身上的白色衣服不会被吃掉。 */
+  function cutoutBackground(imageData) {
+    const w = imageData.width;
+    const h = imageData.height;
+    const d = imageData.data;
+    const at = (x, y) => (y * w + x) * 4;
+
+    // 参考背景色 = 四个角的平均值
+    const cs = [at(0, 0), at(w - 1, 0), at(0, h - 1), at(w - 1, h - 1)];
+    let r0 = 0;
+    let g0 = 0;
+    let b0 = 0;
+    cs.forEach((i) => {
+      r0 += d[i] / 4;
+      g0 += d[i + 1] / 4;
+      b0 += d[i + 2] / 4;
+    });
+
+    const globalTol = 56; // 和背景色的最大差异
+    const localTol = 16; // 和"已经判定为背景的邻居"的最大差异（应对渐变背景）
+    const dist = (i) => Math.sqrt((d[i] - r0) ** 2 + (d[i + 1] - g0) ** 2 + (d[i + 2] - b0) ** 2);
+
+    const mark = new Uint8Array(w * h);
+    const stack = [];
+    const push = (x, y, fromX, fromY) => {
+      if (x < 0 || y < 0 || x >= w || y >= h) return;
+      const p = y * w + x;
+      if (mark[p]) return;
+      const i = p * 4;
+      const near = dist(i) <= globalTol;
+      let local = false;
+      if (!near && fromX >= 0) {
+        const j = at(fromX, fromY);
+        local =
+          Math.abs(d[i] - d[j]) + Math.abs(d[i + 1] - d[j + 1]) + Math.abs(d[i + 2] - d[j + 2]) <= localTol * 3;
+      }
+      if (!near && !local) return;
+      mark[p] = 1;
+      stack.push(p);
+    };
+
+    for (let x = 0; x < w; x += 1) {
+      push(x, 0, -1, -1);
+      push(x, h - 1, -1, -1);
+    }
+    for (let y = 0; y < h; y += 1) {
+      push(0, y, -1, -1);
+      push(w - 1, y, -1, -1);
+    }
+
+    while (stack.length) {
+      const p = stack.pop();
+      const x = p % w;
+      const y = (p - x) / w;
+      push(x + 1, y, x, y);
+      push(x - 1, y, x, y);
+      push(x, y + 1, x, y);
+      push(x, y - 1, x, y);
+    }
+
+    // 边缘羽化：背景区域按"离背景色多远"给一个软透明，边缘就不会有硬白边
+    for (let p = 0; p < w * h; p += 1) {
+      if (!mark[p]) continue;
+      const i = p * 4;
+      const a = Math.round(Math.min(255, Math.max(0, (dist(i) / globalTol) * 240)));
+      if (a < d[i + 3]) d[i + 3] = a;
+    }
+  }
+
+  function prepareWallpaper(file, doCutout) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const max = 1000;
+          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          if (doCutout) {
+            const data = ctx.getImageData(0, 0, w, h);
+            cutoutBackground(data);
+            ctx.putImageData(data, 0, 0);
+            resolve(canvas.toDataURL("image/png"));
+          } else {
+            resolve(canvas.toDataURL("image/jpeg", 0.85));
+          }
+        };
+        img.onerror = reject;
+        img.src = String(reader.result);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function importWallpaper(file) {
+    if (!file) return;
+    toast("正在处理图片…");
+    try {
+      // 同时处理两份：原图版（保留背景）+ 去背景版，之后开关一拨就能切换
+      const base = "wall-" + Date.now().toString(36);
+      const withBg = await prepareWallpaper(file, false);
+      const cut = await prepareWallpaper(file, true);
+      await mediaPut(base + "-orig", withBg);
+      await mediaPut(base + "-cut", cut);
+      data.meta.wall.key = base;
+      // 智能默认：去背景用「完整显示」，保留背景用「铺满」
+      data.meta.wall.size = data.meta.wall.cutout ? "contain" : "cover";
+      saveData();
+      render({ animate: false });
+      toast("壁纸已更新");
+    } catch (err) {
+      toast("这张图读不出来，换一张试试");
     }
   }
 
@@ -342,6 +566,29 @@
     bar.innerHTML =
       '<div><h1>设置</h1><div class="sub">配色、学期与数据</div></div>' +
       '<button type="button" class="iconbtn" data-action="go" data-view="today" aria-label="回到今日">' + ICON_CHEVRON + "</button>";
+  }
+
+  /* 立绘壁纸：贴在最底下，卡片浮在上面 */
+  function applyWall() {
+    const w = data.meta.wall || {};
+    const el = $("wall");
+    // 同一个 key 下存了两份：-orig 保留背景、-cut 去掉背景
+    const url = w.key ? media[w.key + (w.cutout === false ? "-orig" : "-cut")] || media[w.key + "-orig"] || "" : "";
+    if (!url) {
+      el.hidden = true;
+      el.style.backgroundImage = "";
+      appEl.classList.remove("has-wall");
+      return;
+    }
+    const showing = ui.view === "week" ? w.onWeek !== false : ui.view === "today" ? w.onToday !== false : true;
+    el.hidden = false;
+    appEl.classList.add("has-wall");
+    el.style.backgroundImage = 'url("' + url + '")';
+    el.style.backgroundSize = w.size === "cover" ? "cover" : "contain";
+    el.style.backgroundPosition =
+      w.align === "bottom" ? "bottom center" : w.align === "center" ? "center center" : "top center";
+    el.style.setProperty("--wall-blur", (Number(w.blur) || 0) + "px");
+    el.style.opacity = showing ? String(w.opacity == null ? 0.85 : w.opacity) : "0";
   }
 
   /* ============ 6. 渲染：今日 ============ */
@@ -542,6 +789,17 @@
     const m = data.meta;
     const isPreset = (p) => p.a.toLowerCase() === String(m.accent).toLowerCase();
     const labCount = data.courses.filter((c) => c.kind === "lab").length;
+    const w = m.wall || {};
+    const version = (base) => media[base + (w.cutout === false ? "-orig" : "-cut")] || media[base + "-orig"] || "";
+    const wallUrl = w.key ? version(w.key) : "";
+    const wallKeys = Object.keys(media)
+      .filter((k) => k.endsWith("-orig") && media[k])
+      .map((k) => k.slice(0, -5))
+      .sort()
+      .reverse();
+    const opacityPct = Math.round((w.opacity == null ? 0.85 : w.opacity) * 100);
+    const opt = (value, text, current) =>
+      '<option value="' + value + '"' + (String(current) === String(value) ? " selected" : "") + ">" + text + "</option>";
 
     $("view-settings").innerHTML =
       '<div class="group"><h2>学期</h2>' +
@@ -578,6 +836,48 @@
       '<div class="field"><span>自定义颜色</span><input type="color" data-set="accentColor" value="' + m.accent + '"></div>' +
       "</div>" +
 
+      '<div class="group"><h2>立绘壁纸</h2>' +
+      '<div class="wall-preview">' +
+      (wallUrl ? '<img src="' + wallUrl + '" alt="当前壁纸">' : "<span>还没有壁纸，选一张立绘试试</span>") +
+      "</div>" +
+      '<div class="btn-row" style="padding:2px 0 10px">' +
+      '<button type="button" class="btn" data-action="pick-wall">选一张立绘</button>' +
+      '<button type="button" class="btn btn-danger" data-action="clear-wall"' + (wallUrl ? "" : " disabled") +
+      ">清除壁纸</button>" +
+      "</div>" +
+      (wallKeys.length > 1
+        ? '<div class="wall-thumbs">' +
+          wallKeys
+            .map(
+              (k) =>
+                '<button type="button" class="wall-thumb" data-action="use-wall" data-key="' + k +
+                '" aria-pressed="' + (k === w.key) + '" aria-label="切换到这张壁纸"><img src="' + version(k) + '" alt=""></button>'
+            )
+            .join("") +
+          "</div>"
+        : "") +
+      '<div class="field"><span>不透明度</span><span class="wall-range">' +
+      '<input type="range" min="10" max="100" step="5" data-wall="opacity" value="' + opacityPct + '"><b>' + opacityPct +
+      "%</b></span></div>" +
+      '<div class="field"><span>模糊</span><span class="wall-range">' +
+      '<input type="range" min="0" max="12" step="1" data-wall="blur" value="' + (w.blur || 0) + '"><b>' +
+      (w.blur || 0) + "px</b></span></div>" +
+      '<div class="field"><span>位置</span><select data-wall="align">' +
+      opt("top", "顶部", w.align) + opt("center", "居中", w.align) + opt("bottom", "底部", w.align) +
+      "</select></div>" +
+      '<div class="field"><span>大小</span><select data-wall="size">' +
+      opt("contain", "完整显示", w.size) + opt("cover", "铺满（可能裁到）", w.size) +
+      "</select></div>" +
+      '<div class="field"><span>自动去掉背景<span class="hint">浅底立绘打开它；带背景的整图关掉、配合「铺满」</span></span>' +
+      '<label class="switch"><input type="checkbox" data-wall="cutout"' + (w.cutout !== false ? " checked" : "") +
+      "><i></i></label></div>" +
+      '<div class="field"><span>今日页显示</span><label class="switch"><input type="checkbox" data-wall="onToday"' +
+      (w.onToday !== false ? " checked" : "") + "><i></i></label></div>" +
+      '<div class="field"><span>课表页显示</span><label class="switch"><input type="checkbox" data-wall="onWeek"' +
+      (w.onWeek !== false ? " checked" : "") + "><i></i></label></div>" +
+      '<div class="hint" style="padding:0 0 12px">每张图都存了「去背景」和「保留背景」两份，拨上面的开关可以立刻对比，不用重新选图。课表页会自动再淡一档，保证课程块看得清。图片只存在这台设备上（浏览器的本地数据库），不上传、也不在 GitHub 仓库里。</div>' +
+      "</div>" +
+
       '<div class="group"><h2>课表数据</h2>' +
       '<div class="field"><span>排课条数</span><span>' + data.courses.length + " 条（含 " + labCount + " 个实验）</span></div>" +
       '<div class="btn-row" style="padding:4px 0 10px">' +
@@ -611,8 +911,10 @@
     anim.weekSlide = animate && weekChanged ? (dir > 0 ? "next" : dir < 0 ? "prev" : "fade") : "";
     appEl.dataset.anim = animate ? "on" : "off";
     appEl.dataset.stagger = anim.stagger ? "on" : "off";
+    appEl.dataset.view = ui.view;
 
     applyTheme();
+    applyWall();
     renderAppBar();
     ["today", "week", "settings"].forEach((v) => {
       $("view-" + v).hidden = v !== ui.view;
@@ -857,6 +1159,23 @@
           render();
           toast("已清空，点课表空白格开始加课");
         }
+      } else if (action === "pick-wall") {
+        $("wall-file").click();
+      } else if (action === "clear-wall") {
+        const oldKey = data.meta.wall.key;
+        data.meta.wall.key = "";
+        if (oldKey) {
+          mediaDel(oldKey + "-orig");
+          mediaDel(oldKey + "-cut");
+        }
+        saveData();
+        render({ animate: false });
+        toast("已清除壁纸");
+      } else if (action === "use-wall") {
+        data.meta.wall.key = el.dataset.key;
+        saveData();
+        render({ animate: false });
+        toast("已切换壁纸");
       }
       return;
     }
@@ -886,6 +1205,40 @@
     }
     saveData();
     render({ animate: false });
+  });
+
+  // 壁纸参数：拖动时实时预览，松手后保存
+  document.addEventListener("input", (event) => {
+    const el = event.target.closest('input[type="range"][data-wall]');
+    if (!el) return;
+    const w = data.meta.wall;
+    if (el.dataset.wall === "opacity") w.opacity = clamp(Number(el.value) / 100, 0.1, 1);
+    if (el.dataset.wall === "blur") w.blur = clamp(Number(el.value), 0, 12);
+    applyWall();
+    const label = el.parentElement && el.parentElement.querySelector("b");
+    if (label) label.textContent = el.dataset.wall === "opacity" ? Math.round(w.opacity * 100) + "%" : w.blur + "px";
+  });
+
+  document.addEventListener("change", (event) => {
+    const el = event.target.closest("[data-wall]");
+    if (!el) return;
+    const key = el.dataset.wall;
+    const w = data.meta.wall;
+    if (key === "opacity") w.opacity = clamp(Number(el.value) / 100, 0.1, 1);
+    else if (key === "blur") w.blur = clamp(Number(el.value), 0, 12);
+    else if (el.type === "checkbox") {
+      w[key] = el.checked;
+      // 去背景配「完整显示」，保留背景配「铺满」，一拨就是最好看的组合
+      if (key === "cutout") w.size = el.checked ? "contain" : "cover";
+    } else w[key] = el.value;
+    saveData();
+    render({ animate: false });
+  });
+
+  $("wall-file").addEventListener("change", (event) => {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = "";
+    if (file) importWallpaper(file);
   });
 
   $("import-file").addEventListener("change", (event) => {
@@ -926,5 +1279,9 @@
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
 
-  render({ first: true });
+  // 先把本地存的壁纸读进内存，再渲染首屏
+  (async function boot() {
+    await mediaLoadAll();
+    render({ first: true });
+  })();
 })();
